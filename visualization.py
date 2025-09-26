@@ -1,8 +1,9 @@
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.widgets import Slider
+import kpis
 
-def plot_warehouse_map(num_aisles, sections_per_side, wh, orders_by_picker, sku_to_location, picker_path):
+def plot_warehouse_map(num_aisles, sections_per_side, wh, orders_by_picker, sku_to_location, picker_path, kpis):
     aisle_width = wh.aisle_width_m
     aisle_length = wh.aisle_length_m
     rack_depth = 0.5
@@ -102,6 +103,18 @@ def plot_warehouse_map(num_aisles, sections_per_side, wh, orders_by_picker, sku_
     ax.axis('off')
     plt.title("Warehouse Map (meters): Racks, Aisles, Sides, Picker Path", fontsize=14)
 
+    # Add KPI metrics
+    def format_kpi(k, v):
+        if "Time" in k or "time" in k or "Walk" in k or "Pick" in k:
+            return f"{k}: {v:.2f} s ({v/60:.2f} min)"
+        elif isinstance(v, float):
+            return f"{k}: {v:.2f}"
+        else:
+            return f"{k}: {v}"
+    
+    kpi_text = "\n".join(format_kpi(k, v) for k, v in kpis.items())
+    ax.legend([kpi_text], loc='upper left', bbox_to_anchor=(-0.28 , 1), fontsize=10, frameon=True, title="KPIs")
+    
     # Add slider for picker path
     ax_slider = plt.axes([0.15, 0.05, 0.7, 0.04])
     slider = Slider(ax_slider, 'Step', 1, max(1, len(picker_path)), valinit=1, valstep=1)
