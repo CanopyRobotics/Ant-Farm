@@ -56,14 +56,16 @@ def main():
     sim = SimulationEngine(wh, slotting_policy, batching_policy, routing_policy)
     picker_path = sim.run(sku_ids, orders, locations, sections_per_side, num_pickers=num_pickers)
     kpis = compute_kpis(picker_path, orders, wh)
+    # Sort SKUs by popularity
+    sorted_skus = sorted(sku_popularity, key=sku_popularity.get, reverse=True)
+    n = len(sorted_skus)
+    a_skus = set(sorted_skus[:int(0.2 * n)])
+    b_skus = set(sorted_skus[int(0.2 * n):int(0.5 * n)])
+    c_skus = set(sorted_skus[int(0.5 * n):])
     # For visualization, you may need to re-batch and re-slot for the plot
     orders_by_picker = batching_policy.batch(orders, num_pickers)
     sku_to_location = slotting_policy.assign(sku_ids, locations)
-    plot_warehouse_map(wh.num_aisles, sections_per_side, wh, orders_by_picker, sku_to_location, picker_path, kpis)
-    sorted_pop = sorted(sku_popularity.values(), reverse=True)
-    top_20pct = int(0.2 * len(sorted_pop))
-    print(f"Top 20% SKUs account for: {sum(sorted_pop[:top_20pct]) * 100:.1f}% of picks")   
-
+    plot_warehouse_map(wh.num_aisles, sections_per_side, wh, orders_by_picker, sku_to_location, picker_path, kpis, a_skus, b_skus, c_skus)
 
 if __name__ == "__main__":
     main()

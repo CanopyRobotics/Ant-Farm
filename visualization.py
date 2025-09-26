@@ -2,15 +2,15 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.widgets import Slider
 import kpis
+import mplcursors
 
-def plot_warehouse_map(num_aisles, sections_per_side, wh, orders_by_picker, sku_to_location, picker_path, kpis):
+def plot_warehouse_map(num_aisles, sections_per_side, wh, orders_by_picker, sku_to_location, picker_path, kpis, a_skus, b_skus, c_skus):
     aisle_width = wh.aisle_width_m
     aisle_length = wh.aisle_length_m
     rack_depth = 0.5
     section_length = aisle_length / sections_per_side
     cross_aisle_height = 2.0
 
-    # Compute X positions for each aisle and rack
     x_positions = []
     for aisle in range(num_aisles):
         x_left_rack = aisle * (2 * rack_depth + aisle_width)
@@ -20,30 +20,51 @@ def plot_warehouse_map(num_aisles, sections_per_side, wh, orders_by_picker, sku_
 
     total_height = sections_per_side * section_length
 
-    # Draw warehouse
     fig, ax = plt.subplots(figsize=(num_aisles * 2.5, sections_per_side * 1.2))
     plt.subplots_adjust(bottom=0.18)
 
-    # Draw racks and labels
+    # For tooltips
+    marker_handles = []
+    marker_labels = []
+
     for aisle in range(num_aisles):
         x_left_rack, x_aisle, x_right_rack = x_positions[aisle]
         aisle_num = aisle + 1
         left_side_id = f"A{2*aisle_num-1:03d}"
         right_side_id = f"A{2*aisle_num:03d}"
 
-        for s_idx in range(sections_per_side):
-            section_letters = chr(ord('A') + (s_idx // 26)) + chr(ord('A') + (s_idx % 26))
-            y = s_idx * section_length
-            rect = patches.Rectangle((x_left_rack, y), rack_depth, section_length, linewidth=1, edgecolor='black', facecolor='lightblue')
-            ax.add_patch(rect)
-            ax.text(x_left_rack + rack_depth / 2, y + section_length / 2, section_letters, ha='center', va='center', fontsize=7)
+        for side_id, x_rack, facecolor in [
+            (left_side_id, x_left_rack, 'lightblue'),
+            (right_side_id, x_right_rack, 'lightgreen')
+        ]:
+            for s_idx in range(sections_per_side):
+                section_letters = chr(ord('A') + (s_idx // 26)) + chr(ord('A') + (s_idx % 26))
+                y = s_idx * section_length
+                section_id = f"{side_id}-{section_letters}"
 
-        for s_idx in range(sections_per_side):
-            section_letters = chr(ord('A') + (s_idx // 26)) + chr(ord('A') + (s_idx % 26))
-            y = s_idx * section_length
-            rect = patches.Rectangle((x_right_rack, y), rack_depth, section_length, linewidth=1, edgecolor='black', facecolor='lightgreen')
-            ax.add_patch(rect)
-            ax.text(x_right_rack + rack_depth / 2, y + section_length / 2, section_letters, ha='center', va='center', fontsize=7)
+                # Draw rack rectangle
+                rect = patches.Rectangle((x_rack, y), rack_depth, section_length, linewidth=1, edgecolor='black', facecolor=facecolor)
+                ax.add_patch(rect)
+                # Draw section label
+                ax.text(x_rack + rack_depth / 2, y + section_length / 2, section_letters, ha='center', va='center', fontsize=7)
+
+                # Gather all SKUs at this location
+                skus_here = [sku for sku, loc in sku_to_location.items() if loc.section == section_id and loc.side_id == side_id]
+                if skus_here:
+                    # Build label for tooltip
+                    class_lines = []
+                    for sku in skus_here:
+                        if sku in a_skus:
+                            class_lines.append(f"A: {sku}")
+                        elif sku in b_skus:
+                            class_lines.append(f"B: {sku}")
+                        else:
+                            class_lines.append(f"C: {sku}")
+                    label = "\n".join(class_lines)
+                    # Plot a single gray marker for this section
+                    handle = ax.plot(x_rack + rack_depth / 2, y + section_length / 2, 'o', color='gray', markersize=8, alpha=0.7)[0]
+                    marker_handles.append(handle)
+                    marker_labels.append(label)
 
         # Place labels above the top cross-aisle
         label_y = total_height + cross_aisle_height + 0.5
@@ -96,7 +117,7 @@ def plot_warehouse_map(num_aisles, sections_per_side, wh, orders_by_picker, sku_
 
     ax.set_xlim(
         x_positions[0][0] - rack_depth - 0.5,
-        x_positions[-1][2] + rack_depth + 0.5
+        x_positions[-1][2] + rack_depth + 2
     )
     ax.set_ylim(-cross_aisle_height - 0.5, total_height + cross_aisle_height + 2)
     ax.set_aspect('equal')
@@ -132,5 +153,12 @@ def plot_warehouse_map(num_aisles, sections_per_side, wh, orders_by_picker, sku_
 
     slider.on_changed(update)
     update(1)
+
+    # --- Add mplcursors tooltips ---
+    if marker_handles:
+        cursor = mplcursors.cursor(marker_handles, hover=True)
+        @cursor.connect("add")
+        def on_add(sel):
+            sel.annotation.set_text(marker_labels[sel.index])
 
     plt.show()
