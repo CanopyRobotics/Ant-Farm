@@ -10,7 +10,10 @@ class SimulationEngine:
 
     def run(self, sku_ids, orders, locations, sections_per_side, num_pickers=1):
         sku_to_location = self.slotting_policy.assign(sku_ids, locations)
-        orders_by_picker = self.batching_policy.batch(orders, num_pickers)
+        # Pass all required arguments to batching_policy.batch
+        orders_by_picker = self.batching_policy.batch(
+            orders, num_pickers, sku_to_location, self.wh, sections_per_side
+        )
         picker_paths = self.routing_policy.build_path(
             orders_by_picker, sku_to_location, self.wh, sections_per_side=sections_per_side
         )

@@ -8,7 +8,7 @@ from slotting import (
     RandomSlotting,
     AffinitySlotting
 )
-from batching import RoundRobinBatching
+from batching import GreedyProximityBatching, RoundRobinBatching
 from routing import SideGroupedRouting
 from simulation import SimulationEngine
 from visualization import plot_warehouse_map
@@ -67,20 +67,26 @@ def main():
 
     # --- Choose Slotting Policy ---
     # Uncomment ONE of the following slotting policies:
-    # slotting_policy = AffinitySlotting(sku_groups)           # Affinity/family-based slotting
-    slotting_policy = PopularityABCSlotting(sku_popularity) # Popularity/ABC slotting
+    slotting_policy = AffinitySlotting(sku_groups)           # Affinity/family-based slotting
+    # slotting_policy = PopularityABCSlotting(sku_popularity) # Popularity/ABC slotting
     # slotting_policy = RandomSlotting()                      # Random slotting
     # slotting_policy = RoundRobinSlotting()                  # Round-robin slotting
 
+    # --- Assign SKUs to locations BEFORE batching ---
+    sku_to_location = slotting_policy.assign(sku_ids, locations)
+
     # --- Choose Batching Policy ---
-    batching_policy = RoundRobinBatching()
+    # batching_policy = RoundRobinBatching()
+    batching_policy = GreedyProximityBatching()
+
+    # --- Now batch orders ---
+    orders_by_picker = batching_policy.batch(orders, num_pickers, sku_to_location, wh, sections_per_side, max_orders_per_picker=25)
 
     # --- Choose Routing Policy ---
     routing_policy = SideGroupedRouting()
 
     # --- Simulation ---
     sim = SimulationEngine(wh, slotting_policy, batching_policy, routing_policy)
-    orders_by_picker = batching_policy.batch(orders, num_pickers)  # <-- Move this up!
     picker_paths = sim.run(sku_ids, orders, locations, sections_per_side, num_pickers=num_pickers)
     kpis = compute_kpis(picker_paths, orders_by_picker, wh)
 
@@ -92,7 +98,7 @@ def main():
     c_skus = set(sorted_skus[int(0.5 * n):])
 
     # --- Visualization ---
-    sku_to_location = slotting_policy.assign(sku_ids, locations)
+    
 
     plot_warehouse_map(
         wh.num_aisles, sections_per_side, wh,
