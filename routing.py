@@ -1,4 +1,5 @@
 from collections import defaultdict
+import random
 
 class RoutingPolicy:
     def build_path(self, orders_by_picker, sku_to_location, warehouse_cfg, **kwargs):
@@ -6,7 +7,6 @@ class RoutingPolicy:
 
 class SideGroupedRouting(RoutingPolicy):
     def build_path(self, orders_by_picker, sku_to_location, warehouse_cfg, **kwargs):
-        # This is your build_side_grouped_picker_path logic
         wh = warehouse_cfg
         sections_per_side = kwargs.get("sections_per_side", 10)
         aisle_width = wh.aisle_width_m
@@ -24,25 +24,28 @@ class SideGroupedRouting(RoutingPolicy):
             x_positions.append((x_left_rack, x_aisle, x_right_rack))
         total_height = sections_per_side * section_length
 
-        picker_orders = orders_by_picker[0]
-        pick_points = []
-        side_xs = {}
-        for o in picker_orders:
-            for ln in o.lines:
-                loc = sku_to_location[ln.sku_id]
-                aisle_idx = loc.aisle - 1
-                is_left = int(loc.side_id[-1]) % 2 == 1
-                section_letters = loc.section.split('-')[-1]
-                s_idx = (ord(section_letters[0]) - ord('A')) * 26 + (ord(section_letters[1]) - ord('A'))
-                y = s_idx * section_length + section_length / 2
-                if is_left:
-                    x = x_positions[aisle_idx][0] + rack_depth / 2
-                else:
-                    x = x_positions[aisle_idx][2] + rack_depth / 2
-                pick_points.append((x, y, loc.side_id))
-                side_xs[loc.side_id] = x
-        start_point = (x_positions[0][1] + aisle_width / 2, -cross_aisle_height / 2)
-        return build_side_grouped_picker_path(pick_points, start_point, side_xs, total_height, cross_aisle_height)
+        all_picker_paths = []
+        for picker_orders in orders_by_picker:
+            pick_points = []
+            side_xs = {}
+            for o in picker_orders:
+                for ln in o.lines:
+                    loc = sku_to_location[ln.sku_id]
+                    aisle_idx = loc.aisle - 1
+                    is_left = int(loc.side_id[-1]) % 2 == 1
+                    section_letters = loc.section.split('-')[-1]
+                    s_idx = (ord(section_letters[0]) - ord('A')) * 26 + (ord(section_letters[1]) - ord('A'))
+                    y = s_idx * section_length + section_length / 2
+                    if is_left:
+                        x = x_positions[aisle_idx][0] + rack_depth / 2
+                    else:
+                        x = x_positions[aisle_idx][2] + rack_depth / 2
+                    pick_points.append((x, y, loc.side_id))
+                    side_xs[loc.side_id] = x
+            start_point = (x_positions[0][1] + aisle_width / 2, -cross_aisle_height / 2)
+            picker_path = build_side_grouped_picker_path(pick_points, start_point, side_xs, total_height, cross_aisle_height)
+            all_picker_paths.append(picker_path)
+        return all_picker_paths
 
 def build_side_grouped_picker_path(pick_points, start_point, side_xs, total_height, cross_aisle_height):
     side_picks = defaultdict(list)
@@ -70,8 +73,6 @@ def build_side_grouped_picker_path(pick_points, start_point, side_xs, total_heig
                 picker_path.append((x, y))
         current_pos = picker_path[-1]
     return picker_path
-
-import random
 
 class RandomRouting(RoutingPolicy):
     def build_path(self, orders_by_picker, sku_to_location, warehouse_cfg, **kwargs):

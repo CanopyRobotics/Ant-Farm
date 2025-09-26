@@ -1,15 +1,19 @@
 ﻿# main.py
 
 from models import WarehouseCfg, Order
-from storage import gen_storage_locations, assign_skus_to_locations
-from slotting import RoundRobinSlotting
-from slotting import PopularityABCSlotting
-from slotting import RandomSlotting
+from storage import gen_storage_locations
+from slotting import (
+    RoundRobinSlotting,
+    PopularityABCSlotting,
+    RandomSlotting,
+    AffinitySlotting
+)
 from batching import RoundRobinBatching
 from routing import SideGroupedRouting
 from simulation import SimulationEngine
 from visualization import plot_warehouse_map
 from kpis import compute_kpis
+from affinity import compute_affinity_matrix, group_skus_by_affinity
 
 import random
 import numpy as np
@@ -39,9 +43,10 @@ def generate_pareto_popularity(sku_ids, alpha=1.16):
     return dict(zip(sku_ids, popularity))
 
 def main():
+    # --- Warehouse and Data Generation ---
     wh = WarehouseCfg(num_aisles=10, aisle_length_m=20.0, aisle_width_m=3.0, speed_mps=0.75, pick_time_s=20.0)
     sections_per_side = 10
-    num_pickers = 1
+    num_pickers = 3
     num_orders = 25
     mean_lines = 4
     rng = random.Random(42)
@@ -49,23 +54,45 @@ def main():
     locations = gen_storage_locations(wh.num_aisles, sections_per_side)
     orders = gen_orders(num_orders, sku_ids, mean_lines, rng)
     sku_popularity = generate_pareto_popularity(sku_ids)
-    slotting_policy = PopularityABCSlotting(sku_popularity)
-    # slotting_policy = RandomSlotting()
+
+    # --- Affinity Analysis (for AffinitySlotting) ---
+    affinity = compute_affinity_matrix(orders)
+    sku_groups = group_skus_by_affinity(affinity, sku_ids, group_size=18)  # 18 = totes per section/side
+
+    # --- Choose Slotting Policy ---
+    # Uncomment ONE of the following slotting policies:
+    # slotting_policy = AffinitySlotting(sku_groups)           # Affinity/family-based slotting
+    # slotting_policy = PopularityABCSlotting(sku_popularity) # Popularity/ABC slotting
+    slotting_policy = RandomSlotting()                      # Random slotting
+    # slotting_policy = RoundRobinSlotting()                  # Round-robin slotting
+
+    # --- Choose Batching Policy ---
     batching_policy = RoundRobinBatching()
+
+    # --- Choose Routing Policy ---
     routing_policy = SideGroupedRouting()
+
+    # --- Simulation ---
     sim = SimulationEngine(wh, slotting_policy, batching_policy, routing_policy)
-    picker_path = sim.run(sku_ids, orders, locations, sections_per_side, num_pickers=num_pickers)
-    kpis = compute_kpis(picker_path, orders, wh)
-    # Sort SKUs by popularity
+    orders_by_picker = batching_policy.batch(orders, num_pickers)  # <-- Move this up!
+    picker_paths = sim.run(sku_ids, orders, locations, sections_per_side, num_pickers=num_pickers)
+    kpis = compute_kpis(picker_paths, orders_by_picker, wh)
+
+    # --- ABC Classification for Visualization ---
     sorted_skus = sorted(sku_popularity, key=sku_popularity.get, reverse=True)
     n = len(sorted_skus)
     a_skus = set(sorted_skus[:int(0.2 * n)])
     b_skus = set(sorted_skus[int(0.2 * n):int(0.5 * n)])
     c_skus = set(sorted_skus[int(0.5 * n):])
-    # For visualization, you may need to re-batch and re-slot for the plot
-    orders_by_picker = batching_policy.batch(orders, num_pickers)
+
+    # --- Visualization ---
     sku_to_location = slotting_policy.assign(sku_ids, locations)
-    plot_warehouse_map(wh.num_aisles, sections_per_side, wh, orders_by_picker, sku_to_location, picker_path, kpis, a_skus, b_skus, c_skus)
+
+    plot_warehouse_map(
+        wh.num_aisles, sections_per_side, wh,
+        orders_by_picker, sku_to_location, picker_paths, kpis,
+        a_skus, b_skus, c_skus
+    )
 
 if __name__ == "__main__":
     main()

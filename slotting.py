@@ -24,15 +24,15 @@ class PopularityABCSlotting(SlottingPolicy):
     def assign(self, sku_ids: List[int], locations: List[StorageLocation]):
         # Sort SKUs by popularity (descending)
         sorted_skus = sorted(sku_ids, key=lambda sku: -self.sku_popularity.get(sku, 0))
-
-        # --- Sort locations by proximity to I/O point (0,0) ---
+        # Sort locations by proximity to I/O (e.g., (0,0))
         def location_distance(loc):
-            # Compute (x, y) for loc based on warehouse geometry
+            # You need to compute (x, y) for each location based on your warehouse geometry
+            # Example for left/right racks:
             aisle_idx = (int(loc.side_id[1:]) - 1) // 2
             is_left = int(loc.side_id[-1]) % 2 == 1
             rack_depth = 0.5
-            aisle_width = 3.0
-            section_length = 20.0 / 10
+            aisle_width = 3.0  # or use wh.aisle_width_m
+            section_length = 20.0 / 10  # or use wh.aisle_length_m / sections_per_side
             x_left_rack = aisle_idx * (2 * rack_depth + aisle_width)
             x_aisle = x_left_rack + rack_depth
             x_right_rack = x_aisle + aisle_width
@@ -41,11 +41,23 @@ class PopularityABCSlotting(SlottingPolicy):
             s_idx = (ord(section_letters[0]) - ord('A')) * 26 + (ord(section_letters[1]) - ord('A'))
             y = s_idx * section_length + section_length / 2
             return (x**2 + y**2)**0.5
-
         locations_sorted = sorted(locations, key=location_distance)
-        # ------------------------------------------------------
-
         assignment = {}
         for i, sku in enumerate(sorted_skus):
             assignment[sku] = locations_sorted[i % len(locations_sorted)]
+        return assignment
+
+class AffinitySlotting(SlottingPolicy):
+    def __init__(self, sku_groups):
+        self.sku_groups = sku_groups
+
+    def assign(self, sku_ids, locations):
+        assignment = {}
+        loc_iter = iter(locations)
+        for group in self.sku_groups:
+            for sku in group:
+                try:
+                    assignment[sku] = next(loc_iter)
+                except StopIteration:
+                    break
         return assignment

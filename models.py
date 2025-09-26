@@ -18,3 +18,11 @@ class WarehouseCfg:
     aisle_width_m: float
     speed_mps: float
     pick_time_s: float
+
+@dataclass
+class RunCfg:
+    num_pickers: int
+    num_orders: int
+    order_lines_mean: float
+    seed: int
+    policy: str

@@ -1,10 +1,10 @@
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.widgets import Slider
-import kpis
-import mplcursors
+import itertools
+import matplotlib.lines as mlines
 
-def plot_warehouse_map(num_aisles, sections_per_side, wh, orders_by_picker, sku_to_location, picker_path, kpis, a_skus, b_skus, c_skus):
+def plot_warehouse_map(num_aisles, sections_per_side, wh, orders_by_picker, sku_to_location, picker_paths, kpis, a_skus, b_skus, c_skus):
     aisle_width = wh.aisle_width_m
     aisle_length = wh.aisle_length_m
     rack_depth = 0.5
@@ -23,10 +23,6 @@ def plot_warehouse_map(num_aisles, sections_per_side, wh, orders_by_picker, sku_
     fig, ax = plt.subplots(figsize=(num_aisles * 2.5, sections_per_side * 1.2))
     plt.subplots_adjust(bottom=0.18)
 
-    # For tooltips
-    marker_handles = []
-    marker_labels = []
-
     for aisle in range(num_aisles):
         x_left_rack, x_aisle, x_right_rack = x_positions[aisle]
         aisle_num = aisle + 1
@@ -40,31 +36,11 @@ def plot_warehouse_map(num_aisles, sections_per_side, wh, orders_by_picker, sku_
             for s_idx in range(sections_per_side):
                 section_letters = chr(ord('A') + (s_idx // 26)) + chr(ord('A') + (s_idx % 26))
                 y = s_idx * section_length
-                section_id = f"{side_id}-{section_letters}"
-
                 # Draw rack rectangle
                 rect = patches.Rectangle((x_rack, y), rack_depth, section_length, linewidth=1, edgecolor='black', facecolor=facecolor)
                 ax.add_patch(rect)
                 # Draw section label
                 ax.text(x_rack + rack_depth / 2, y + section_length / 2, section_letters, ha='center', va='center', fontsize=7)
-
-                # Gather all SKUs at this location
-                skus_here = [sku for sku, loc in sku_to_location.items() if loc.section == section_id and loc.side_id == side_id]
-                if skus_here:
-                    # Build label for tooltip
-                    class_lines = []
-                    for sku in skus_here:
-                        if sku in a_skus:
-                            class_lines.append(f"A: {sku}")
-                        elif sku in b_skus:
-                            class_lines.append(f"B: {sku}")
-                        else:
-                            class_lines.append(f"C: {sku}")
-                    label = "\n".join(class_lines)
-                    # Plot a single gray marker for this section
-                    handle = ax.plot(x_rack + rack_depth / 2, y + section_length / 2, 'o', color='gray', markersize=8, alpha=0.7)[0]
-                    marker_handles.append(handle)
-                    marker_labels.append(label)
 
         # Place labels above the top cross-aisle
         label_y = total_height + cross_aisle_height + 0.5
@@ -124,41 +100,99 @@ def plot_warehouse_map(num_aisles, sections_per_side, wh, orders_by_picker, sku_
     ax.axis('off')
     plt.title("Warehouse Map (meters): Racks, Aisles, Sides, Picker Path", fontsize=14)
 
-    # Add KPI metrics
-    def format_kpi(k, v):
-        if "Time" in k or "time" in k or "Walk" in k or "Pick" in k:
-            return f"{k}: {v:.2f} s ({v/60:.2f} min)"
-        elif isinstance(v, float):
-            return f"{k}: {v:.2f}"
+    # Build picker color legend text
+    picker_colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown', 'pink', 'gray', 'olive', 'cyan']
+    color_legend = "Picker Colors:\n"
+    for i in range(len(picker_paths)):
+        color_legend += f"  Picker {i+1}: {picker_colors[i]}\n"
+
+    # Combine color legend and KPIs
+    kpi_text = color_legend + "\n"
+    for picker_kpi in kpis["Per Picker"]:
+        kpi_text += f"Picker {picker_kpi['Picker']}:\n"
+        kpi_text += f"  Orders Completed: {picker_kpi['Orders Completed']}\n"
+        kpi_text += f"  Distance: {picker_kpi['Distance Walked (m)']:.2f} m\n"
+        kpi_text += f"  Time: {picker_kpi['Time (s)']:.2f} s ({picker_kpi['Time (min)']:.2f} min)\n"
+        kpi_text += f"  Steps: {picker_kpi['Steps']}\n"
+        kpi_text += f"  Lines Picked: {picker_kpi['Lines Picked']}\n"
+    kpi_text += "\nOperation-wide KPIs:\n"
+    for k, v in kpis["Operation"].items():
+        if isinstance(v, float):
+            kpi_text += f"{k}: {v:.2f}\n"
         else:
-            return f"{k}: {v}"
+            kpi_text += f"{k}: {v}\n"
     
-    kpi_text = "\n".join(format_kpi(k, v) for k, v in kpis.items())
-    ax.legend([kpi_text], loc='upper left', bbox_to_anchor=(-0.28 , 1), fontsize=10, frameon=True, title="KPIs")
-    
-    # Add slider for picker path
-    ax_slider = plt.axes([0.15, 0.05, 0.7, 0.04])
-    slider = Slider(ax_slider, 'Step', 1, max(1, len(picker_path)), valinit=1, valstep=1)
+    # Colors for pickers (cycle if more than 10)
+    colors = itertools.cycle(['red', 'blue', 'green', 'orange', 'purple', 'brown', 'pink', 'gray', 'olive', 'cyan'])
+    path_lines = []
+    path_dots = []
+    sliders = []
+    ax_slider_list = []
 
-    path_line, = ax.plot([], [], '-', color='red', linewidth=2, alpha=0.7)
-    path_dots, = ax.plot([], [], 'o', color='red', markersize=5, alpha=0.7)
+    for i, path in enumerate(picker_paths):
+        xs = [p[0] for p in path]
+        ys = [p[1] for p in path]
+        color = next(colors)
+        line, = ax.plot(xs, ys, '-', color=color, linewidth=2, alpha=0.7, label=f'Picker {i+1}')
+        dots, = ax.plot(xs, ys, 'o', color=color, markersize=5, alpha=0.7)
+        path_lines.append(line)
+        path_dots.append(dots)
 
-    def update(val):
-        step = int(slider.val)
-        xs = [p[0] for p in picker_path[:step]]
-        ys = [p[1] for p in picker_path[:step]]
-        path_line.set_data(xs, ys)
-        path_dots.set_data(xs, ys)
-        fig.canvas.draw_idle()
+        # Create a slider for this picker
+        ax_slider = plt.axes([0.15, 0.01 + 0.05 * i, 0.7, 0.03])
+        slider = Slider(ax_slider, f'Picker {i+1} Step', 1, len(path), valinit=len(path), valstep=1)
+        sliders.append(slider)
+        ax_slider_list.append(ax_slider)
 
-    slider.on_changed(update)
-    update(1)
+        # --- Move this inside the loop ---
+        def make_update_func(line=line, dots=dots, path=path):
+            def update(val):
+                step = int(val)
+                xs = [p[0] for p in path[:step]]
+                ys = [p[1] for p in path[:step]]
+                line.set_data(xs, ys)
+                dots.set_data(xs, ys)
+                plt.draw()
+            return update
 
-    # --- Add mplcursors tooltips ---
-    if marker_handles:
-        cursor = mplcursors.cursor(marker_handles, hover=True)
-        @cursor.connect("add")
-        def on_add(sel):
-            sel.annotation.set_text(marker_labels[sel.index])
+        slider.on_changed(make_update_func())
+
+    # Build legend handles for picker colors
+    handles = []
+    picker_colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown', 'pink', 'gray', 'olive', 'cyan']
+
+    def underline(text):
+        # Unicode combining underline
+        return ''.join([c + '\u0332' for c in text])
+
+    for i, picker_kpi in enumerate(kpis["Per Picker"]):
+        # Bold and underline Picker X
+        picker_label = f'Picker {picker_kpi["Picker"]}'
+        picker_label_fmt = f'\N{ZERO WIDTH SPACE}{underline(picker_label)}'  # Underline
+        line = mlines.Line2D([], [], color=picker_colors[i], label=picker_label_fmt, linewidth=2)
+        # Picker KPIs as a multi-line string
+        kpi_label = (
+            f'Orders Completed: {picker_kpi["Orders Completed"]}\n'
+            f'Distance: {picker_kpi["Distance Walked (m)"]:.2f} m\n'
+            f'Time: {picker_kpi["Time (s)"]:.2f} s ({picker_kpi["Time (min)"]:.2f} min)\n'
+            f'Steps: {picker_kpi["Steps"]}\n'
+            f'Lines Picked: {picker_kpi["Lines Picked"]}'
+        )
+        kpi_handle = mlines.Line2D([], [], color='none', label='   ' + kpi_label)
+        handles.append(line)
+        handles.append(kpi_handle)
+
+    # Bold and underline Operation-wide KPIs
+    op_kpi_title = f'\N{ZERO WIDTH SPACE}{underline("Operation-wide KPIs")}'
+    op_kpi_text = op_kpi_title + "\n"
+    for k, v in kpis["Operation"].items():
+        if isinstance(v, float):
+            op_kpi_text += f"{k}: {v:.2f}\n"
+        else:
+            op_kpi_text += f"{k}: {v}\n"
+    handles.append(mlines.Line2D([], [], color='none', label=op_kpi_text))
+
+    # Show legend at left
+    ax.legend(handles=handles, loc='upper left', bbox_to_anchor=(-0.4, 1), fontsize=9, frameon=True, title="Pickers & KPIs", handlelength=2)
 
     plt.show()
