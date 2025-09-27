@@ -8,7 +8,7 @@ from slotting import (
     RandomSlotting,
     AffinitySlotting
 )
-from batching import GreedyProximityBatching, RoundRobinBatching
+from batching import GreedyProximityBatching, RoundRobinBatching, BatchingPolicyAdapter, SeedSavingsBatching
 from routing import SideGroupedRouting
 from simulation import SimulationEngine
 from visualization import plot_warehouse_map
@@ -67,20 +67,23 @@ def main():
 
     # --- Choose Slotting Policy ---
     # Uncomment ONE of the following slotting policies:
-    slotting_policy = AffinitySlotting(sku_groups)           # Affinity/family-based slotting
+    # slotting_policy = AffinitySlotting(sku_groups)           # Affinity/family-based slotting
     # slotting_policy = PopularityABCSlotting(sku_popularity) # Popularity/ABC slotting
-    # slotting_policy = RandomSlotting()                      # Random slotting
+    slotting_policy = RandomSlotting()                      # Random slotting
     # slotting_policy = RoundRobinSlotting()                  # Round-robin slotting
 
     # --- Assign SKUs to locations BEFORE batching ---
     sku_to_location = slotting_policy.assign(sku_ids, locations)
 
     # --- Choose Batching Policy ---
-    # batching_policy = RoundRobinBatching()
-    batching_policy = GreedyProximityBatching()
+    # batching_policy = BatchingPolicyAdapter(GreedyProximityBatching())
+    batching_policy = BatchingPolicyAdapter(SeedSavingsBatching())
+    # batching_policy = BatchingPolicyAdapter(RoundRobinBatching())
 
     # --- Now batch orders ---
-    orders_by_picker = batching_policy.batch(orders, num_pickers, sku_to_location, wh, sections_per_side, max_orders_per_picker=25)
+    orders_by_picker = batching_policy.batch(
+        orders, num_pickers, sku_to_location, wh, sections_per_side, max_orders_per_picker=25
+    )
 
     # --- Choose Routing Policy ---
     routing_policy = SideGroupedRouting()
@@ -98,7 +101,6 @@ def main():
     c_skus = set(sorted_skus[int(0.5 * n):])
 
     # --- Visualization ---
-    
 
     plot_warehouse_map(
         wh.num_aisles, sections_per_side, wh,
