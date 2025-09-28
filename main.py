@@ -8,8 +8,8 @@ from slotting import (
     RandomSlotting,
     AffinitySlotting
 )
-from batching import GreedyProximityBatching, RoundRobinBatching, BatchingPolicyAdapter, SeedSavingsBatching
-from routing import SideGroupedRouting
+from batching import GreedyProximityBatching, RoundRobinBatching, BatchingPolicyAdapter, SeedSavingsBatching, RandomBatching
+from routing import SideGroupedRouting, SShapeRouting, LargestGapRouting, HybridCombinedRouting
 from simulation import SimulationEngine
 from visualization import plot_warehouse_map
 from kpis import compute_kpis
@@ -44,7 +44,7 @@ def generate_pareto_popularity(sku_ids, alpha=1.16):
     Returns a dict: {sku_id: popularity}
     """
     n = len(sku_ids)
-    raw = np.random.pareto(alpha, n) + 1  # +1 to avoid zeros
+    raw = np.random.pareto(alpha, n) + 1
     popularity = raw / raw.sum()
     return dict(zip(sku_ids, popularity))
 
@@ -57,36 +57,38 @@ def main():
     mean_lines = 4
     rng = random.Random(42)
     sku_ids = gen_skus(wh.num_aisles, sections_per_side)
-    sku_popularity = generate_pareto_popularity(sku_ids)  # <-- Add this before gen_orders!
+    sku_popularity = generate_pareto_popularity(sku_ids)
     orders = gen_orders(num_orders, sku_ids, mean_lines, rng, sku_popularity)
     locations = gen_storage_locations(wh.num_aisles, sections_per_side)
 
     # --- Affinity Analysis (for AffinitySlotting) ---
     affinity = compute_affinity_matrix(orders)
-    sku_groups = group_skus_by_affinity(affinity, sku_ids, group_size=18)  # 18 = totes per section/side
+    sku_groups = group_skus_by_affinity(affinity, sku_ids, group_size=18)
 
     # --- Choose Slotting Policy ---
-    # Uncomment ONE of the following slotting policies:
-    # slotting_policy = AffinitySlotting(sku_groups)           # Affinity/family-based slotting
-    # slotting_policy = PopularityABCSlotting(sku_popularity) # Popularity/ABC slotting
-    slotting_policy = RandomSlotting()                      # Random slotting
-    # slotting_policy = RoundRobinSlotting()                  # Round-robin slotting
+    slotting_policy = AffinitySlotting(sku_groups)
+    # slotting_policy = PopularityABCSlotting(sku_popularity)
+    # slotting_policy = RandomSlotting()
+    # slotting_policy = RoundRobinSlotting()
 
-    # --- Assign SKUs to locations BEFORE batching ---
     sku_to_location = slotting_policy.assign(sku_ids, locations)
 
     # --- Choose Batching Policy ---
-    # batching_policy = BatchingPolicyAdapter(GreedyProximityBatching())
-    batching_policy = BatchingPolicyAdapter(SeedSavingsBatching())
+    batching_policy = BatchingPolicyAdapter(GreedyProximityBatching())
+    # batching_policy = BatchingPolicyAdapter(SeedSavingsBatching())
     # batching_policy = BatchingPolicyAdapter(RoundRobinBatching())
+    # batching_policy = BatchingPolicyAdapter(RandomBatching())
 
-    # --- Now batch orders ---
+
     orders_by_picker = batching_policy.batch(
         orders, num_pickers, sku_to_location, wh, sections_per_side, max_orders_per_picker=25
     )
 
     # --- Choose Routing Policy ---
-    routing_policy = SideGroupedRouting()
+    # routing_policy = SideGroupedRouting()
+    # routing_policy = SShapeRouting()
+    # routing_policy = LargestGapRouting()
+    routing_policy = HybridCombinedRouting()
 
     # --- Simulation ---
     sim = SimulationEngine(wh, slotting_policy, batching_policy, routing_policy)
@@ -101,31 +103,11 @@ def main():
     c_skus = set(sorted_skus[int(0.5 * n):])
 
     # --- Visualization ---
-
     plot_warehouse_map(
         wh.num_aisles, sections_per_side, wh,
         orders_by_picker, sku_to_location, picker_paths, kpis,
         a_skus, b_skus, c_skus
     )
-    # # Pritning ABC class counts per picker for PopularityABCSlotting
-    # for picker_idx in range(3):
-    #     a_count = 0
-    #     b_count = 0
-    #     c_count = 0
-    #     for order in orders_by_picker[picker_idx]:
-    #         for line in order.lines:
-    #             sku = line.sku_id
-    #             if sku in a_skus:
-    #                 a_count += 1
-    #             elif sku in b_skus:
-    #                 b_count += 1
-    #             elif sku in c_skus:
-    #                 c_count += 1
-    #     print(f"\nPicker {picker_idx+1} ABC class counts:")
-    #     print(f"A class SKUs: {a_count}")
-    #     print(f"B class SKUs: {b_count}")
-    #     print(f"C class SKUs: {c_count}")
-
 
 if __name__ == "__main__":
     main()

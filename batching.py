@@ -99,6 +99,16 @@ class SeedSavingsBatching:
             batches[picker_idx] = batch
         return batches
 
+class RandomBatching(BatchingPolicy):
+    def batch(self, orders, num_pickers):
+        import random
+        buckets = [[] for _ in range(num_pickers)]
+        shuffled_orders = orders[:]
+        random.shuffle(shuffled_orders)
+        for i, o in enumerate(shuffled_orders):
+            buckets[i % num_pickers].append(o)
+        return buckets
+
 class BatchingPolicyAdapter:
     def __init__(self, policy):
         self.policy = policy
