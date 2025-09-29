@@ -66,18 +66,18 @@ def main():
     sku_groups = group_skus_by_affinity(affinity, sku_ids, group_size=18)
 
     # --- Choose Slotting Policy ---
-    slotting_policy = AffinitySlotting(sku_groups)
+    # slotting_policy = AffinitySlotting(sku_groups)
     # slotting_policy = PopularityABCSlotting(sku_popularity)
     # slotting_policy = RandomSlotting()
-    # slotting_policy = RoundRobinSlotting()
+    slotting_policy = RoundRobinSlotting()
 
     sku_to_location = slotting_policy.assign(sku_ids, locations)
 
     # --- Choose Batching Policy ---
-    batching_policy = BatchingPolicyAdapter(GreedyProximityBatching())
+    # batching_policy = BatchingPolicyAdapter(GreedyProximityBatching())
     # batching_policy = BatchingPolicyAdapter(SeedSavingsBatching())
     # batching_policy = BatchingPolicyAdapter(RoundRobinBatching())
-    # batching_policy = BatchingPolicyAdapter(RandomBatching())
+    batching_policy = BatchingPolicyAdapter(RandomBatching())
 
 
     orders_by_picker = batching_policy.batch(
@@ -85,10 +85,10 @@ def main():
     )
 
     # --- Choose Routing Policy ---
-    # routing_policy = SideGroupedRouting()
+    routing_policy = SideGroupedRouting()
     # routing_policy = SShapeRouting()
     # routing_policy = LargestGapRouting()
-    routing_policy = HybridCombinedRouting()
+    # routing_policy = HybridCombinedRouting()
 
     # --- Simulation ---
     sim = SimulationEngine(wh, slotting_policy, batching_policy, routing_policy)
