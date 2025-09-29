@@ -85,71 +85,303 @@ app.layout = html.Div([
     [Input("summary-section", "id")]
 )
 def update_graphs(_):
+    # Empty-state guard with 13 outputs
     if DF.empty:
         empty_msg = html.Div("No data found. Run experiments to generate a CSV in runallcombos_results.")
-        fig_empty = px.scatter(pd.DataFrame(columns=["x", "y"]), x="x", y="y", title="No data")
+        fig_empty = px.scatter(pd.DataFrame(columns=["x", "y"]))
         return (
-            empty_msg,         # summary-section
-            html.Div(),        # best-policies-section
-            html.Div(),        # top-combos-section
-            [],                # what-if-cards
-            html.Div(),        # comparative-table
-            fig_empty,         # slotting-barplot
-            fig_empty,         # slotting-time-boxplot
-            fig_empty,         # slotting-distance-barplot
-            fig_empty,         # slotting-distance-boxplot
-            fig_empty,         # slotting-scatterplot
-            fig_empty,         # picker-time-barplot
-            fig_empty,         # distance-boxplot
-            fig_empty          # distance-vs-time-scatter
+            empty_msg, html.Div(), html.Div(), [], html.Div(),
+            fig_empty, fig_empty, fig_empty, fig_empty, fig_empty,
+            fig_empty, fig_empty, fig_empty
         )
 
-    # Best policies by type (using lowest avg picker time)
-    slot_group = DF.groupby("Slotting")["Average Picker Time (min)"].mean()
-    batch_group = DF.groupby("Batching")["Average Picker Time (min)"].mean()
-    route_group = DF.groupby("Routing")["Average Picker Time (min)"].mean()
+    df = DF.copy()
+    # Ensure numeric types
+    for col in [
+        "Average Picker Time (min)", "Average Picker Distance (m)",
+        "Total Distance Walked (m)", "Total Time (min)",
+        "Average Orders per Picker", "Average Lines per Order",
+    ]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Best policies
+    slot_group = df.groupby("Slotting")["Average Picker Time (min)"].mean()
+    batch_group = df.groupby("Batching")["Average Picker Time (min)"].mean()
+    route_group = df.groupby("Routing")["Average Picker Time (min)"].mean()
     best_slotting = slot_group.idxmin(); best_slotting_val = float(slot_group.min())
     best_batching = batch_group.idxmin(); best_batching_val = float(batch_group.min())
     best_routing = route_group.idxmin(); best_routing_val = float(route_group.min())
 
-    # Top 3 overall combinations
+    # Top combos
     combo_cols = ["Slotting", "Batching", "Routing"]
-    combo_group = DF.groupby(combo_cols)["Average Picker Time (min)"].mean().reset_index()
+    combo_group = df.groupby(combo_cols)["Average Picker Time (min)"].mean().reset_index()
     top_combos = combo_group.nsmallest(3, "Average Picker Time (min)")
 
-    # Summary cards section
+    # Summary section (professional cards)
+    summary_kpis = [
+        ("Total Distance Walked", f"{df['Total Distance Walked (m)'].mean():,.0f} m" if 'Total Distance Walked (m)' in df else "-"),
+        ("Total Time", f"{df['Total Time (min)'].mean():.1f} min" if 'Total Time (min)' in df else "-"),
+        ("Avg Picker Time", f"{df['Average Picker Time (min)'].mean():.2f} min"),
+        ("Avg Picker Distance", f"{df['Average Picker Distance (m)'].mean():.0f} m" if 'Average Picker Distance (m)' in df else "-"),
+        ("Avg Orders/Picker", f"{df['Average Orders per Picker'].mean():.1f}" if 'Average Orders per Picker' in df else "-"),
+        ("Avg Lines/Order", f"{df['Average Lines per Order'].mean():.1f}" if 'Average Lines per Order' in df else "-"),
+    ]
     summary_section = html.Div([
-        html.H3("Best Policies (by Average Picker Time [min])"),
+        html.H2("Experiment Summary", style={"marginBottom": "12px", "color": "#2c3e50"}),
         html.Div([
             html.Div([
-                html.H4("Best Slotting"),
-                html.P(f"{best_slotting} ({best_slotting_val:.2f} min)")
-            ], style={"textAlign": "center"}),
+                html.H4(title, style={"marginBottom": "4px", "color": "#34495e"}),
+                html.P(val, style={"fontSize": "20px", "fontWeight": "bold", "color": "#2980b9", "margin": "0"})
+            ], style={
+                "background": "#f4f6f8", "borderRadius": "10px", "boxShadow": "0 2px 8px rgba(44,62,80,0.07)",
+                "padding": "16px 18px", "minWidth": "160px", "textAlign": "center",
+                "marginRight": "18px", "marginBottom": "12px"
+            }) for title, val in summary_kpis
+        ], style={"display": "flex", "flexWrap": "wrap", "gap": "0"})
+    ], style={**section_style, "marginBottom": "18px"})
+
+    # Best policies section (professional cards)
+    best_policies_section = html.Div([
+        html.H2("Best Policies", style={"marginBottom": "10px", "color": "#2c3e50"}),
+        html.Div([
             html.Div([
-                html.H4("Best Batching"),
-                html.P(f"{best_batching} ({best_batching_val:.2f} min)")
-            ], style={"textAlign": "center"}),
+                html.H4("Slotting", style={"color": "#16a085"}),
+                html.P(best_slotting, style={"fontWeight": "bold", "fontSize": "18px", "margin": "0"}),
+                html.P(f"Avg Picker Time: {best_slotting_val:.2f} min", style={"fontSize": "14px", "color": "#7f8c8d", "margin": "0"})
+            ], style={"background": "#e8f8f5", "borderRadius": "8px", "padding": "14px 16px", "textAlign": "center", "marginRight": "18px", "boxShadow": "0 1px 4px rgba(22,160,133,0.07)"}),
             html.Div([
-                html.H4("Best Routing"),
-                html.P(f"{best_routing} ({best_routing_val:.2f} min)")
-            ], style={"textAlign": "center"}),
-        ], style={"display": "flex", "gap": "24px", "justifyContent": "space-between"})
+                html.H4("Batching", style={"color": "#e67e22"}),
+                html.P(best_batching, style={"fontWeight": "bold", "fontSize": "18px", "margin": "0"}),
+                html.P(f"Avg Picker Time: {best_batching_val:.2f} min", style={"fontSize": "14px", "color": "#7f8c8d", "margin": "0"})
+            ], style={"background": "#fbeee6", "borderRadius": "8px", "padding": "14px 16px", "textAlign": "center", "marginRight": "18px", "boxShadow": "0 1px 4px rgba(230,126,34,0.07)"}),
+            html.Div([
+                html.H4("Routing", style={"color": "#2980b9"}),
+                html.P(best_routing, style={"fontWeight": "bold", "fontSize": "18px", "margin": "0"}),
+                html.P(f"Avg Picker Time: {best_routing_val:.2f} min", style={"fontSize": "14px", "color": "#7f8c8d", "margin": "0"})
+            ], style={"background": "#eaf2fb", "borderRadius": "8px", "padding": "14px 16px", "textAlign": "center", "boxShadow": "0 1px 4px rgba(41,128,185,0.07)"}),
+        ], style={"display": "flex", "flexWrap": "wrap", "gap": "0"})
+    ], style={**section_style, "marginBottom": "18px"})
+
+    # Top combos table
+    def combos_table(df_top):
+        rows = []
+        for _, r in df_top.iterrows():
+            rows.append(html.Tr([
+                html.Td(r["Slotting"]), html.Td(r["Batching"]), html.Td(r["Routing"]),
+                html.Td(f"{r['Average Picker Time (min)']:.2f}", style=td_right)
+            ]))
+        header = html.Tr([
+            html.Th("Slotting", style=th_style), html.Th("Batching", style=th_style),
+            html.Th("Routing", style=th_style), html.Th("Avg Picker Time (min)", style={**th_style, "textAlign": "right"})
+        ])
+        return html.Table([html.Thead(header), html.Tbody(rows)], style=table_style)
+
+    top_combos_section = html.Div([
+        html.H2("Top 3 Policy Combinations", style={"marginBottom": "8px", "color": "#2c3e50"}),
+        combos_table(top_combos)
     ], style=section_style)
 
-    # Best policies by type (using lowest avg picker time)
-    slot_group = DF.groupby("Slotting")["Average Picker Time (min)"].mean()
-    batch_group = DF.groupby("Batching")["Average Picker Time (min)"].mean()
-    route_group = DF.groupby("Routing")["Average Picker Time (min)"].mean()
-    best_slotting = slot_group.idxmin(); best_slotting_val = float(slot_group.min())
-    best_batching = batch_group.idxmin(); best_batching_val = float(batch_group.min())
-    best_routing = route_group.idxmin(); best_routing_val = float(route_group.min())
+    # What-if cards vs a standard baseline (visual-first, emphasized)
+    baseline = {"Slotting": "RandomSlotting", "Batching": "RandomBatching", "Routing": "SShapeRouting"}
+    baseline_mask = (
+        (df["Slotting"] == baseline["Slotting"]) &
+        (df["Batching"] == baseline["Batching"]) &
+        (df["Routing"] == baseline["Routing"]) 
+    )
+    baseline_time = df.loc[baseline_mask, "Average Picker Time (min)"].mean()
 
-    # Top 3 overall combinations
-    combo_cols = ["Slotting", "Batching", "Routing"]
-    combo_group = DF.groupby(combo_cols)["Average Picker Time (min)"].mean().reset_index()
-    top_combos = combo_group.nsmallest(3, "Average Picker Time (min)")
+    def pct_gain(new, base):
+        if pd.isna(base) or base == 0 or pd.isna(new):
+            return None
+        return (base - new) / base * 100.0
 
-    # Summary cards section
+    # Best overall combo
+    best_overall = combo_group.nsmallest(1, "Average Picker Time (min)").iloc[0]
+    best_combo_time = float(best_overall["Average Picker Time (min)"])
+    best_combo_gain = pct_gain(best_combo_time, baseline_time)
+
+    # Best per policy with others fixed at baseline
+    def best_given(dim, fixed_cols):
+        mask = pd.Series(True, index=df.index)
+        for c, v in fixed_cols.items():
+            mask &= (df[c] == v)
+        if not mask.any():
+            return None, None
+        g = df.loc[mask].groupby(dim)["Average Picker Time (min)"].mean()
+        if g.empty:
+            return None, None
+        name = g.idxmin(); val = float(g.min())
+        return (name, val)
+
+    slot_name_bp, slot_time_bp = best_given("Slotting", {"Batching": baseline["Batching"], "Routing": baseline["Routing"]})
+    batch_name_bp, batch_time_bp = best_given("Batching", {"Slotting": baseline["Slotting"], "Routing": baseline["Routing"]})
+    route_name_bp, route_time_bp = best_given("Routing", {"Slotting": baseline["Slotting"], "Batching": baseline["Batching"]})
+
+    def chip_pct(delta):
+        if delta is None or pd.isna(delta):
+            return html.Span("n/a", style={"background": "#f0f0f0", "color": "#666", "padding": "2px 8px", "borderRadius": "999px", "fontSize": "12px"})
+        good = delta >= 0
+        bg = "#e8f8f0" if good else "#fdecea"
+        fg = "#1e8449" if good else "#c0392b"
+        label = "faster" if good else "slower"
+        return html.Span(f"{delta:.1f}% {label}", style={"background": bg, "color": fg, "padding": "2px 8px", "borderRadius": "999px", "fontWeight": 600, "fontSize": "12px"})
+
+    def hero_card(title, combo_txt, gain_pct, new_time, base_time):
+        good = (gain_pct is not None and gain_pct >= 0)
+        grad = "linear-gradient(135deg, #e8f8f5 0%, #ffffff 60%)" if good else "linear-gradient(135deg, #fdecea 0%, #ffffff 60%)"
+        accent = "#16a085" if good else "#c0392b"
+        return html.Div([
+            html.Div("🏆 " + title, style={"fontSize": "16px", "fontWeight": 700, "color": accent, "marginBottom": "6px"}),
+            html.Div([
+                html.Div([
+                    html.Div(f"{gain_pct:.1f}%" if gain_pct is not None else "n/a", style={"fontSize": "32px", "fontWeight": 800, "lineHeight": 1, "color": accent}),
+                    html.Div("faster" if (gain_pct is not None and gain_pct >= 0) else ("slower" if gain_pct is not None else ""), style={"fontSize": "12px", "color": "#666"})
+                ], style={"minWidth": "100px"}),
+                html.Div([
+                    html.Div(combo_txt, style={"fontWeight": 700, "marginBottom": "4px", "color": "#2c3e50"}),
+                    html.Div(f"Avg time: {new_time:.2f} min vs {base_time:.2f} min baseline" if (new_time is not None and base_time is not None and not pd.isna(new_time) and not pd.isna(base_time)) else "Avg time vs baseline unavailable", style={"fontSize": "12px", "color": "#555"}),
+                ])
+            ], style={"display": "flex", "alignItems": "center", "gap": "16px"})
+        ], style={
+            "flexBasis": "100%", "background": grad, "borderLeft": f"4px solid {accent}", "border": "1px solid #e8e8e8",
+            "borderRadius": "10px", "padding": "14px 16px", "boxShadow": "0 2px 8px rgba(0,0,0,0.06)"
+        })
+
+    def small_card(icon, title, policy, gain_pct, accent):
+        return html.Div([
+            html.Div([html.Span(icon, style={"marginRight": "6px"}), html.Span(title)], style={"fontWeight": 700, "color": accent, "marginBottom": "4px"}),
+            html.Div(policy if policy else "-", style={"fontWeight": 600, "color": "#2c3e50", "marginBottom": "6px"}),
+            chip_pct(gain_pct)
+        ], style={
+            "background": "#ffffff", "border": "1px solid #ececec", "borderLeft": f"4px solid {accent}",
+            "borderRadius": "10px", "padding": "12px 14px", "boxShadow": "0 1px 4px rgba(0,0,0,0.05)", "minWidth": "220px"
+        })
+
+    what_if_cards = []
+    if not pd.isna(baseline_time):
+        # Hero: Best Combo vs Baseline
+        what_if_cards.append(
+            hero_card(
+                "Best Combo vs Baseline",
+                f"{best_overall['Slotting']} + {best_overall['Batching']} + {best_overall['Routing']}",
+                best_combo_gain,
+                best_combo_time,
+                float(baseline_time) if not pd.isna(baseline_time) else None,
+            )
+        )
+
+        # Secondary: Change-one-dimension cards
+        if slot_name_bp is not None:
+            g = pct_gain(slot_time_bp, baseline_time)
+            what_if_cards.append(small_card("📦", "Change Slotting Only", slot_name_bp, g, "#16a085"))
+        if batch_name_bp is not None:
+            g = pct_gain(batch_time_bp, baseline_time)
+            what_if_cards.append(small_card("🧩", "Change Batching Only", batch_name_bp, g, "#e67e22"))
+        if route_name_bp is not None:
+            g = pct_gain(route_time_bp, baseline_time)
+            what_if_cards.append(small_card("🧭", "Change Routing Only", route_name_bp, g, "#2980b9"))
+    else:
+        # Baseline not available in data message card
+        what_if_cards.append(html.Div([
+            html.Div("ℹ️ Baseline combo not found in results", style={"fontWeight": 700, "color": "#2c3e50", "marginBottom": "4px"}),
+            html.Div(f"Expected baseline: {baseline['Slotting']} + {baseline['Batching']} + {baseline['Routing']}", style={"fontSize": "12px", "color": "#555"}),
+        ], style={"background": "#fffef5", "border": "1px solid #f5e6a7", "borderLeft": "4px solid #f1c40f", "borderRadius": "8px", "padding": "12px 14px", "boxShadow": "0 1px 4px rgba(0,0,0,0.05)"}))
+
+    # Comparative table
+    comp_rows = []
+    def add_row(label, slot, batch, route, t):
+        if pd.isna(t):
+            delta = None; pct = None
+        else:
+            delta = None if pd.isna(baseline_time) else (t - baseline_time)
+            pct = None if pd.isna(baseline_time) else pct_gain(t, baseline_time)
+        comp_rows.append({
+            "Label": label, "Slotting": slot, "Batching": batch, "Routing": route,
+            "Avg Time (min)": t if not pd.isna(t) else None,
+            "Δ Time vs Base (min)": delta, "Δ % vs Base": pct
+        })
+
+    add_row("Baseline", baseline["Slotting"], baseline["Batching"], baseline["Routing"], baseline_time)
+    add_row("Best Combo", best_overall["Slotting"], best_overall["Batching"], best_overall["Routing"], best_combo_time)
+    for _, r in top_combos.iterrows():
+        add_row("Top Combo", r["Slotting"], r["Batching"], r["Routing"], float(r["Average Picker Time (min)"]))
+
+    def fmt(v, digits=2, suffix=""):
+        if v is None or pd.isna(v):
+            return "-"
+        return f"{v:.{digits}f}{suffix}"
+
+    table_header = html.Tr([
+        html.Th("Label", style=th_style), html.Th("Slotting", style=th_style), html.Th("Batching", style=th_style), html.Th("Routing", style=th_style),
+        html.Th("Avg Time (min)", style={**th_style, "textAlign": "right"}),
+        html.Th("Δ Time (min)", style={**th_style, "textAlign": "right"}),
+        html.Th("Δ %", style={**th_style, "textAlign": "right"}),
+    ])
+    table_rows = []
+    for r in comp_rows:
+        table_rows.append(html.Tr([
+            html.Td(r["Label"]), html.Td(r["Slotting"]), html.Td(r["Batching"]), html.Td(r["Routing"]),
+            html.Td(fmt(r["Avg Time (min)"]), style=td_right),
+            html.Td(fmt(r["Δ Time vs Base (min)"]), style=td_right),
+            html.Td(fmt(r["Δ % vs Base"], 1, "%"), style=td_right),
+        ]))
+    comparative_table = html.Div([
+        html.H2("Comparative Summary", style={"marginBottom": "8px", "color": "#2c3e50"}),
+        html.Table([html.Thead(table_header), html.Tbody(table_rows)], style=table_style)
+    ], style=section_style)
+
+    # Plots
+    # Slotting
+    slotting_barplot = px.bar(
+        df.groupby("Slotting", as_index=False)["Average Picker Time (min)"].mean(),
+        x="Slotting", y="Average Picker Time (min)", title="Avg Picker Time by Slotting (lower is better)", color="Slotting"
+    )
+    slotting_time_boxplot = px.box(df, x="Slotting", y="Average Picker Time (min)", color="Slotting", title="Picker Time Distribution by Slotting")
+    if "Average Picker Distance (m)" in df:
+        slotting_distance_barplot = px.bar(
+            df.groupby("Slotting", as_index=False)["Average Picker Distance (m)"].mean(),
+            x="Slotting", y="Average Picker Distance (m)", title="Avg Picker Distance by Slotting", color="Slotting"
+        )
+        slotting_distance_boxplot = px.box(df, x="Slotting", y="Average Picker Distance (m)", color="Slotting", title="Picker Distance Distribution by Slotting")
+        slotting_scatterplot = px.scatter(df, x="Average Picker Distance (m)", y="Average Picker Time (min)", color="Slotting", title="Time vs Distance by Slotting", hover_data=["Batching","Routing"]) 
+    else:
+        emptydf = pd.DataFrame(columns=["x","y"]) 
+        slotting_distance_barplot = px.scatter(emptydf)
+        slotting_distance_boxplot = px.scatter(emptydf)
+        slotting_scatterplot = px.scatter(emptydf)
+
+    # Batching
+    picker_time_barplot = px.bar(
+        df.groupby("Batching", as_index=False)["Average Picker Time (min)"].mean(),
+        x="Batching", y="Average Picker Time (min)", title="Avg Picker Time by Batching", color="Batching"
+    )
+
+    # Routing
+    if "Average Picker Distance (m)" in df:
+        distance_boxplot = px.box(df, x="Routing", y="Average Picker Distance (m)", color="Routing", title="Picker Distance Distribution by Routing")
+        distance_vs_time_scatter = px.scatter(df, x="Average Picker Distance (m)", y="Average Picker Time (min)", color="Routing", symbol="Batching", title="Time vs Distance by Routing & Batching")
+    else:
+        emptydf = pd.DataFrame(columns=["x","y"]) 
+        distance_boxplot = px.scatter(emptydf)
+        distance_vs_time_scatter = px.scatter(emptydf)
+
+    # Return all 13 outputs
+    return (
+        summary_section,
+        best_policies_section,
+        top_combos_section,
+        what_if_cards,
+        comparative_table,
+        slotting_barplot,
+        slotting_time_boxplot,
+        slotting_distance_barplot,
+        slotting_distance_boxplot,
+        slotting_scatterplot,
+        picker_time_barplot,
+        distance_boxplot,
+        distance_vs_time_scatter,
+    )
     summary_section = html.Div([
         html.H3("Best Policies (by Average Picker Time [min])"),
         html.Div([
