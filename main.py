@@ -52,7 +52,7 @@ def main():
     # --- Warehouse and Data Generation ---
     wh = WarehouseCfg(num_aisles=10, aisle_length_m=20.0, aisle_width_m=3.0, speed_mps=0.75, pick_time_s=20.0)
     sections_per_side = 10
-    num_pickers = 3
+    num_pickers = 1
     num_orders = 25 * num_pickers
     mean_lines = 4
     rng = random.Random(42)
