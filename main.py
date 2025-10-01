@@ -52,7 +52,7 @@ def main():
     # --- Warehouse and Data Generation ---
     wh = WarehouseCfg(num_aisles=10, aisle_length_m=20.0, aisle_width_m=3.0, speed_mps=0.75, pick_time_s=20.0)
     sections_per_side = 10
-    num_pickers = 1
+    num_pickers = 5
     num_orders = 25 * num_pickers
     mean_lines = 4
     rng = random.Random(42)
@@ -66,10 +66,10 @@ def main():
     sku_groups = group_skus_by_affinity(affinity, sku_ids, group_size=18)
 
     # --- Choose Slotting Policy ---
-    # slotting_policy = AffinitySlotting(sku_groups)
+    slotting_policy = AffinitySlotting(sku_groups)
     # slotting_policy = PopularityABCSlotting(sku_popularity)
     # slotting_policy = RandomSlotting()
-    slotting_policy = RoundRobinSlotting()
+    # slotting_policy = RoundRobinSlotting()
 
     sku_to_location = slotting_policy.assign(sku_ids, locations)
 

@@ -53,6 +53,7 @@ class AffinitySlotting(SlottingPolicy):
 
     def assign(self, sku_ids, locations):
         assignment = {}
+        # Assign groups sequentially to provided locations (no Neo-specific behavior)
         loc_iter = iter(locations)
         for group in self.sku_groups:
             for sku in group:
