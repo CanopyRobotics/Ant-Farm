@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.colors import sample_colorscale
+from typing import Dict
 
 def plot_before_after(current_map: pd.DataFrame, proposed_map: pd.DataFrame):
     # current_map/proposed_map: columns [sku_id, side_id, section, tote_id]
@@ -339,7 +340,8 @@ def plot_floorplan_with_heat(layout_df: pd.DataFrame,
                              aisle_width: float = 2.0,
                              section_length: float = 1.0,
                              vmin: float | None = None,
-                             vmax: float | None = None) -> go.Figure:
+                             vmax: float | None = None,
+                             tote_heat_override: Dict[str, float] | None = None) -> go.Figure:
     """
     Draw Ant-Farm-like floorplan and color each rack-section rectangle by traffic.
     - Traffic is sum(quantity) per SKU from sales_df, aggregated to the section where the SKU is stored (via map_df).
@@ -352,18 +354,22 @@ def plot_floorplan_with_heat(layout_df: pd.DataFrame,
     if "section" not in map_df.columns or "side_id" not in map_df.columns:
         map_df = map_df.merge(layout_df[["tote_id", "side_id", "section"]], on="tote_id", how="left")
 
-    # Compute per-SKU traffic (sales). SKUs with no sales -> 0.
-    if sales_df is not None and "sku_id" in sales_df.columns and "quantity" in sales_df.columns:
-        sku_qty = sales_df.groupby("sku_id")["quantity"].sum()
+    # Compute per-section heat. If tote_heat_override is provided, aggregate per-tote picks to section-level.
+    if tote_heat_override is not None:
+        # Build mapping tote -> section letters
+        tm = layout_df[["tote_id", "side_id", "section"]].copy()
+        tm["sec_letters"] = tm["section"].astype(str).apply(lambda s: s.split('-')[-1] if '-' in s else s)
+        tm["qty"] = tm["tote_id"].map(lambda t: float(tote_heat_override.get(t, 0.0)))
+        sec_qty = tm.groupby(["side_id", "sec_letters"], dropna=False)["qty"].sum().reset_index()
     else:
-        # fallback: count 1 per SKU
-        sku_qty = pd.Series(1, index=pd.Index(map_df["sku_id"].unique(), name="sku_id"))
-    map_df["qty"] = map_df["sku_id"].map(sku_qty).fillna(0)
-
-    # Aggregate to section letters
-    merged = map_df[["side_id", "section", "qty"]].copy()
-    merged["sec_letters"] = merged["section"].astype(str).apply(lambda s: s.split('-')[-1] if '-' in s else s)
-    sec_qty = merged.groupby(["side_id", "sec_letters"], dropna=False)["qty"].sum().reset_index()
+        if sales_df is not None and "sku_id" in sales_df.columns and "quantity" in sales_df.columns:
+            sku_qty = sales_df.groupby("sku_id")["quantity"].sum()
+        else:
+            sku_qty = pd.Series(1, index=pd.Index(map_df["sku_id"].unique(), name="sku_id"))
+        merged = map_df[["side_id", "section", "sku_id"]].copy()
+        merged["qty"] = merged["sku_id"].map(sku_qty).fillna(0)
+        merged["sec_letters"] = merged["section"].astype(str).apply(lambda s: s.split('-')[-1] if '-' in s else s)
+        sec_qty = merged.groupby(["side_id", "sec_letters"], dropna=False)["qty"].sum().reset_index()
 
     # Geometry: derive aisles and sections from layout
     # A001 is left, A002 is right of aisle 1; include walking space between them.
@@ -392,26 +398,27 @@ def plot_floorplan_with_heat(layout_df: pd.DataFrame,
         t = max(0.0, min(1.0, float(t)))
         return sample_colorscale(colorscale, t)[0]
 
-    # Draw per section rectangles
+    # Draw per-section rectangles using aggregated section heat
     shapes = []
+    # quick lookup for section quantities per side
+    by_side = {}
+    for sid, grp in sec_qty.groupby("side_id"):
+        by_side[sid] = grp.set_index("sec_letters")["qty"].to_dict()
     for aisle in aisles:
         x_left_rack = (aisle - 1) * (2 * rack_depth + aisle_width)
         x_right_rack = x_left_rack + rack_depth + aisle_width
         for side, x_rack in (("L", x_left_rack), ("R", x_right_rack)):
-            side_id = f"A{aisle:03d}"
-            # Map left/right by odd/even ids: A001(left), A002(right)
             sid = f"A{(2*aisle-1 if side=='L' else 2*aisle):03d}"
-            # quantities per section on this side
-            side_sec = sec_qty[sec_qty["side_id"] == sid].set_index("sec_letters")["qty"].to_dict()
+            side_sec = by_side.get(sid, {})
             for sec_letters, idx in sec_index.items():
                 y0 = idx * section_length
                 y1 = y0 + section_length
-                qty = side_sec.get(sec_letters, 0.0)
+                qty = float(side_sec.get(sec_letters, 0.0))
                 shapes.append(dict(
                     type="rect",
                     x0=x_rack, x1=x_rack + rack_depth,
                     y0=y0, y1=y1,
-                    line=dict(width=0.5, color="rgba(50,50,50,0.3)"),
+                    line=dict(width=0.5, color="rgba(50,50,50,0.25)"),
                     fillcolor=color_for(qty)
                 ))
         # walking lane separators

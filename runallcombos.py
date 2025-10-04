@@ -137,7 +137,7 @@ def run_experiments():
         for slot_name, slot_policy_fn in slotting_policies
         for batch_name, batch_policy_fn in batching_policies
         for route_name, route_policy_fn in routing_policies
-        for iteration in range(1, 101)
+        for iteration in range(1, 11)
     ]
 
     with open(csv_filename, "w", newline='') as csvfile:

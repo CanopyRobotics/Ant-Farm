@@ -3,6 +3,8 @@ from dash import html, dcc, Input, Output, State
 import pandas as pd
 import io, base64
 from dataclasses import make_dataclass
+from pathlib import Path
+import os
 
 # Try package-relative imports; fall back to local when run as script
 try:
@@ -11,17 +13,32 @@ try:
     from affinity import compute_affinity_matrix as af_compute_affinity_matrix, group_skus_by_affinity as af_group_skus_by_affinity
     from models import Order
     from .visuals import plot_floorplan_with_heat, compute_vmin_vmax
+    from correlated import build_cooccurrence, cluster_skus_agglomerative, sample_correlated_orders, tote_pick_counts
 except ImportError:
     from data_io import read_layout, read_sku_locations, read_sales
     from policies import AffinitySlotting, PopularityABCSlotting, RandomSlotting, RoundRobinSlotting
     from affinity import compute_affinity_matrix as af_compute_affinity_matrix, group_skus_by_affinity as af_group_skus_by_affinity
     from models import Order
     from visuals import plot_floorplan_with_heat, compute_vmin_vmax
+    from correlated import build_cooccurrence, cluster_skus_agglomerative, sample_correlated_orders, tote_pick_counts
 
 # Simple styles
 CARD = {"border": "1px solid #e0e0e0", "borderRadius": "8px", "padding": "12px", "marginBottom": "12px", "background": "#fff"}
 
 app = dash.Dash(__name__)
+
+# Resolve run_data directory relative to repo root
+RUN_DATA_DIR = (Path(__file__).resolve().parents[2] / "run_data").resolve()
+
+def _read_run_data_csv(filename: str) -> pd.DataFrame | None:
+    """Read a CSV from the run_data folder if it exists; return None otherwise."""
+    try:
+        path = RUN_DATA_DIR / filename
+        if path.exists():
+            return pd.read_csv(path)
+    except Exception:
+        pass
+    return None
 
 app.layout = html.Div([
     html.H1("Neo – Warehouse Slotting Optimizer"),
@@ -41,6 +58,14 @@ app.layout = html.Div([
                 {"label": "Round Robin", "value": "rr"},
                 {"label": "Random", "value": "rand"},
             ], value="affinity", style={"marginBottom": "12px"}),
+            dcc.Checklist(id='simulate-correlated', options=[{"label": "Simulate correlated picks (override heat)", "value": "sim"}], value=[], style={"marginBottom": "12px"}),
+            html.Label("Diagnostics"),
+            dcc.Checklist(
+                id='show-diagnostics',
+                options=[{"label": "Show side balance summary", "value": "side"}],
+                value=[],
+                style={"marginBottom": "12px"}
+            ),
             html.Button("Compute Proposal", id="run", n_clicks=0)
         ], style={"flex": 1}),
         html.Div([
@@ -48,7 +73,8 @@ app.layout = html.Div([
             html.Div([
                 dcc.Loading(dcc.Graph(id="heatmap-current"), type="dot", style={"width": "48%", "display": "inline-block"}),
                 dcc.Loading(dcc.Graph(id="heatmap-proposed"), type="dot", style={"width": "48%", "display": "inline-block", "float": "right"}),
-            ])
+            ]),
+            html.Div(id='diagnostics', style=CARD)
         ], style={"flex": 2})
     ], style={"display": "flex", "gap": "16px"})
 ,
@@ -130,9 +156,20 @@ def _enforce_one_sku_per_tote(assign_map, layout_df, sku_ids):
 )
 def update_upload_status(layout_contents, sku_contents, sales_contents):
     """Return small summaries/previews for each uploaded CSV to give visual confirmation."""
-    def preview(contents):
+    def preview(contents, fallback_filename: str):
         if contents is None:
-            return "No file uploaded."
+            # try auto-load from run_data
+            df = _read_run_data_csv(fallback_filename)
+            if df is None:
+                return f"No file uploaded. Looking for run_data/{fallback_filename} … not found."
+            rows, cols = df.shape
+            preview_csv = df.head(5).to_csv(index=False)
+            preview_lines = preview_csv.splitlines()
+            preview_text = "\n".join(preview_lines[:10])
+            return html.Div([
+                html.Div(f"Auto-loaded run_data/{fallback_filename} — {rows} rows x {cols} cols", style={"fontWeight": "600"}),
+                html.Pre(preview_text, style={"whiteSpace": "pre-wrap", "maxHeight": "160px", "overflow": "auto", "fontSize": "11px"})
+            ])
         try:
             df = parse_upload(contents)
             if df is None:
@@ -150,38 +187,46 @@ def update_upload_status(layout_contents, sku_contents, sales_contents):
         except Exception as e:
             return html.Div([html.Div("Failed to parse file", style={"color": "red"}), html.Div(str(e), style={"fontSize": "11px", "color": "#555"})])
 
-    return preview(layout_contents), preview(sku_contents), preview(sales_contents)
+    return (
+        preview(layout_contents, "layout.csv"),
+        preview(sku_contents, "sku_locations.csv"),
+        preview(sales_contents, "sales.csv"),
+    )
 
 
 @app.callback(
     Output("heatmap-current", "figure"),
     Output("heatmap-proposed", "figure"),
+    Output('diagnostics', 'children'),
     Input("run", "n_clicks"),
     State("upload-layout", "contents"),
     State("upload-sku", "contents"),
     State("upload-sales", "contents"),
     State("policy", "value"),
+    State('show-diagnostics', 'value'),
+    State('simulate-correlated', 'value'),
     prevent_initial_call=True
 )
-def run_policy(n, layout_contents, sku_contents, sales_contents, policy):
-    layout_df = parse_upload(layout_contents)
-    sku_df = parse_upload(sku_contents)
-    sales_df = parse_upload(sales_contents)
+def run_policy(n, layout_contents, sku_contents, sales_contents, policy, show_diag, sim_choices):
+    # Prefer uploaded data; otherwise auto-load from run_data
+    layout_df = parse_upload(layout_contents) if layout_contents is not None else _read_run_data_csv("layout.csv")
+    sku_df = parse_upload(sku_contents) if sku_contents is not None else _read_run_data_csv("sku_locations.csv")
+    sales_df = parse_upload(sales_contents) if sales_contents is not None else _read_run_data_csv("sales.csv")
 
     if layout_df is None or sku_df is None:
-        return {}, {}
+        return {}, {}, None
 
     # Ensure expected columns
     for col in ["tote_id", "side_id", "section"]:
         if col not in layout_df.columns:
-            return {}, {}
+            return {}, {}, None
     if "sku_id" not in sku_df.columns or "tote_id" not in sku_df.columns:
-        return {}, {}
+        return {}, {}, None
 
     # Build current map (1 SKU per tote assumed in input)
     current_map = sku_df.merge(layout_df[["tote_id", "side_id", "section"]], on="tote_id", how="left")
 
-    # Prepare locations in layout reading order
+    # Build locations directly from layout order; canonical policy will handle balanced ordering.
     loc_cols = ["side_id", "section", "tote_id"]
     StorageLocation = make_dataclass("StorageLocation", [(c, str) for c in loc_cols])
     locations_objs = [StorageLocation(**row) for row in layout_df[loc_cols].to_dict("records")]
@@ -207,6 +252,7 @@ def run_policy(n, layout_contents, sku_contents, sales_contents, policy):
     except ImportError:
         from policies import AffinitySlotting, PopularityABCSlotting, RandomSlotting, RoundRobinSlotting
 
+    clusters_for_sim = None
     if policy == "affinity":
         if sales_df is None or "order_id" not in sales_df.columns:
             # Fallback: treat as ABC if no sales/orders
@@ -218,9 +264,21 @@ def run_policy(n, layout_contents, sku_contents, sales_contents, policy):
             order_groups = sales_df.groupby("order_id")["sku_id"].apply(list)
             orders = [Order(id=int(oid), lines=[type("OL", (), {"sku_id": int(s)})() for s in skus]) for oid, skus in order_groups.items()]
             affinity = af_compute_affinity_matrix(orders)
-            groups = af_group_skus_by_affinity(affinity, sku_ids, group_size=18)
+            # Determine totes per section from layout to set cluster size
+            try:
+                sec_counts = layout_df.groupby(["side_id", "section"])['tote_id'].nunique().tolist()
+                if sec_counts:
+                    from statistics import mode
+                    group_size = mode(sec_counts)
+                else:
+                    group_size = 18
+            except Exception:
+                group_size = 18
+            groups = af_group_skus_by_affinity(affinity, sku_ids, group_size=group_size)
             policy_obj = AffinitySlotting(groups)
             assign = policy_obj.assign(sku_ids, locations_objs)
+            # Use the same groups for correlated simulation so heat reflects placement
+            clusters_for_sim = [list(g) for g in groups]
     elif policy == "abc":
         pop = sales_df.groupby("sku_id")["quantity"].sum().to_dict() if sales_df is not None else {}
         policy_obj = PopularityABCSlotting(pop)
@@ -235,16 +293,119 @@ def run_policy(n, layout_contents, sku_contents, sales_contents, policy):
 
     proposed_map = pd.DataFrame([{"sku_id": sku, **assign_1to1[sku]} for sku in sku_ids])
 
-    # Render thermal floorplan overlays (red=hot, blue=cold)
-    # Compute shared vmin/vmax so colors are comparable across current & proposed
-    vmin, vmax = compute_vmin_vmax(layout_df, [current_map, proposed_map], sales_df)
+    # Optionally simulate correlated picks and override per-tote heat with pick visits
+    tote_heat_override = None
+    if sim_choices and ("sim" in sim_choices) and sales_df is not None and "order_id" in sales_df.columns:
+        # build co-occurrence and clusters from uploaded orders
+        if clusters_for_sim is None:
+            order_groups = sales_df.groupby("order_id")["sku_id"].apply(list)
+            orders_raw = [Order(id=int(oid), lines=[type("OL", (), {"sku_id": int(s)})() for s in skus]) for oid, skus in order_groups.items()]
+            M = build_cooccurrence(orders_raw)
+            clusters_for_sim = cluster_skus_agglomerative(M)
+        # sample correlated orders and compute pick counts per tote for proposed map
+        sku_to_tote = {int(row["sku_id"]): row["tote_id"] for _, row in proposed_map.iterrows()}
+        # match simulation volume to uploaded sales
+        num_orders_obs = int(sales_df["order_id"].nunique())
+        mean_lines_obs = float(sales_df.groupby("order_id")["sku_id"].size().mean()) if num_orders_obs > 0 else 4.0
+        syn_orders = sample_correlated_orders(clusters_for_sim, num_orders=num_orders_obs, mean_lines=mean_lines_obs)
+        tote_heat_override = tote_pick_counts(syn_orders, sku_to_tote)
+        # scale simulated picks to match total sales quantity so global colors are comparable
+        try:
+            # current total quantity across all SKUs
+            total_current = float(sales_df["quantity"].sum()) if "quantity" in sales_df.columns else float(len(sales_df))
+            total_sim = float(sum(tote_heat_override.values()))
+            if total_sim > 0 and total_current > 0:
+                scale = total_current / total_sim
+                tote_heat_override = {k: v * scale for k, v in tote_heat_override.items()}
+        except Exception:
+            pass
+
+    # Render bird's-eye overlays using one global scale (vmin/vmax) across both views
+    if tote_heat_override is not None:
+        # compute vmin/vmax from section-level heat of both current (sales) and proposed (override)
+        def _sec_vals_from_map(mdf, override=None):
+            m = pd.DataFrame(mdf).copy()
+            if override is None:
+                # aggregate per section using sales
+                sku_qty = sales_df.groupby("sku_id")["quantity"].sum() if (sales_df is not None and "quantity" in sales_df.columns) else pd.Series(1, index=pd.Index(m["sku_id"].unique(), name="sku_id"))
+                merged = m[["sku_id", "tote_id"]].copy().assign(qty=m["sku_id"].map(sku_qty).fillna(0))
+                merged = merged.merge(layout_df[["tote_id", "side_id", "section"]], on="tote_id", how="left")
+                merged["sec_letters"] = merged["section"].astype(str).apply(lambda s: s.split('-')[-1] if '-' in s else s)
+                sec_qty = merged.groupby(["side_id", "sec_letters"], dropna=False)["qty"].sum().reset_index()
+                z = sec_qty["qty"].to_numpy()
+            else:
+                tm = layout_df[["tote_id", "side_id", "section"]].copy()
+                tm["sec_letters"] = tm["section"].astype(str).apply(lambda s: s.split('-')[-1] if '-' in s else s)
+                tm["qty"] = tm["tote_id"].map(lambda t: float(override.get(t, 0.0)))
+                sec_qty = tm.groupby(["side_id", "sec_letters"], dropna=False)["qty"].sum().reset_index()
+                z = sec_qty["qty"].to_numpy()
+            return z
+        z1 = _sec_vals_from_map(current_map, override=None)
+        z2 = _sec_vals_from_map(proposed_map, override=tote_heat_override)
+        import numpy as np
+        with np.errstate(divide='ignore'):
+            l1 = np.log1p(z1[z1 > 0]) if z1.size else np.array([])
+            l2 = np.log1p(z2[z2 > 0]) if z2.size else np.array([])
+        stacked = np.concatenate([l for l in [l1, l2] if l.size]) if (l1.size or l2.size) else np.array([0.0])
+        vmin = float(np.percentile(stacked, 5))
+        vmax = float(np.percentile(stacked, 95))
+        if vmax <= vmin:
+            vmax = vmin + 1.0
+    else:
+        vmin, vmax = compute_vmin_vmax(layout_df, [current_map, proposed_map], sales_df)
+
     heat_current = plot_floorplan_with_heat(
-        layout_df, current_map, sales_df, title="Current: Warehouse Heat Overlay", colorscale="RdYlBu_r", vmin=vmin, vmax=vmax
+        layout_df, current_map, sales_df, title="Current: Warehouse Heat Overlay", colorscale="RdYlBu_r", vmin=vmin, vmax=vmax, tote_heat_override=None
     )
     heat_proposed = plot_floorplan_with_heat(
-        layout_df, proposed_map, sales_df, title="Proposed: Warehouse Heat Overlay", colorscale="RdYlBu_r", vmin=vmin, vmax=vmax
+        layout_df, proposed_map, sales_df, title="Proposed: Warehouse Heat Overlay", colorscale="RdYlBu_r", vmin=vmin, vmax=vmax, tote_heat_override=tote_heat_override
     )
-    return heat_current, heat_proposed
+    # Optional diagnostics: side balance summary
+    diag_children = None
+    try:
+        if show_diag and ("side" in show_diag):
+            def _summary(df_map: pd.DataFrame, label: str):
+                t = df_map[["sku_id", "side_id"]].dropna().copy()
+                # local helpers
+                def _aisle_from_side(s: str) -> int:
+                    try:
+                        n = int(str(s)[1:])
+                        return (n + 1) // 2
+                    except Exception:
+                        return 0
+                def _is_left(s: str) -> bool:
+                    try:
+                        n = int(str(s)[1:])
+                        return n % 2 == 1
+                    except Exception:
+                        return False
+                t["_aisle"] = t["side_id"].apply(_aisle_from_side)
+                t["_left"] = t["side_id"].apply(_is_left)
+                by = t.groupby(["_aisle", "_left"]).size().unstack(fill_value=0)
+                # ensure both columns present
+                if True not in by.columns:
+                    by[True] = 0
+                if False not in by.columns:
+                    by[False] = 0
+                by = by.sort_index()
+                total_left = int(by.get(True, pd.Series(dtype=int)).sum())
+                total_right = int(by.get(False, pd.Series(dtype=int)).sum())
+                lines = [f"{label} totals — Left: {total_left}, Right: {total_right}, Diff: {total_left-total_right}"]
+                for aisle, row in by.iterrows():
+                    l = int(row.get(True, 0))
+                    r = int(row.get(False, 0))
+                    lines.append(f"Aisle {aisle:>2}: L={l:>3} | R={r:>3} | Diff={l-r:+d}")
+                return lines
+
+            lines_cur = _summary(current_map, "Current")
+            lines_prop = _summary(proposed_map, "Proposed")
+            diag_text = "\n".join(lines_cur + [""] + lines_prop)
+            diag_children = html.Pre(diag_text, style={"whiteSpace": "pre-wrap", "fontSize": "12px", "margin": 0})
+    except Exception as _:
+        # if diagnostics fail, don't block the main output
+        diag_children = None
+
+    return heat_current, heat_proposed, diag_children
 
 
 # Removed front-view and selectors per request to simplify
