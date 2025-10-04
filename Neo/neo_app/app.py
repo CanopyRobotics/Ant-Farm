@@ -74,11 +74,24 @@ app.layout = html.Div([
                 dcc.Loading(dcc.Graph(id="heatmap-current"), type="dot", style={"width": "48%", "display": "inline-block"}),
                 dcc.Loading(dcc.Graph(id="heatmap-proposed"), type="dot", style={"width": "48%", "display": "inline-block", "float": "right"}),
             ]),
-            html.Div(id='diagnostics', style=CARD)
+            html.Div(id='diagnostics', style=CARD),
+            html.H3("Exports"),
+            html.Div([
+                html.Div([
+                    html.Label("Top N moves to export (by impact)"),
+                    dcc.Input(id='export-top-n', type='number', value=1000, min=1, step=1, style={"width": "120px", "marginRight": "12px"}),
+                    html.Button("Download Move Plan CSV", id="btn-export-plan", n_clicks=0, style={"marginRight": "12px"}),
+                    html.Button("Download Proposed Mapping CSV", id="btn-export-mapping", n_clicks=0),
+                    dcc.Download(id="download-plan"),
+                    dcc.Download(id="download-mapping"),
+                ])
+            ], style=CARD)
         ], style={"flex": 2})
     ], style={"display": "flex", "gap": "16px"})
 ,
     # fewer moving parts, no hidden stores
+    dcc.Store(id='store-current-map'),
+    dcc.Store(id='store-proposed-map'),
 ])
 
 
@@ -198,6 +211,8 @@ def update_upload_status(layout_contents, sku_contents, sales_contents):
     Output("heatmap-current", "figure"),
     Output("heatmap-proposed", "figure"),
     Output('diagnostics', 'children'),
+    Output('store-current-map', 'data'),
+    Output('store-proposed-map', 'data'),
     Input("run", "n_clicks"),
     State("upload-layout", "contents"),
     State("upload-sku", "contents"),
@@ -214,14 +229,14 @@ def run_policy(n, layout_contents, sku_contents, sales_contents, policy, show_di
     sales_df = parse_upload(sales_contents) if sales_contents is not None else _read_run_data_csv("sales.csv")
 
     if layout_df is None or sku_df is None:
-        return {}, {}, None
+        return {}, {}, None, None, None
 
     # Ensure expected columns
     for col in ["tote_id", "side_id", "section"]:
         if col not in layout_df.columns:
-            return {}, {}, None
+            return {}, {}, None, None, None
     if "sku_id" not in sku_df.columns or "tote_id" not in sku_df.columns:
-        return {}, {}, None
+        return {}, {}, None, None, None
 
     # Build current map (1 SKU per tote assumed in input)
     current_map = sku_df.merge(layout_df[["tote_id", "side_id", "section"]], on="tote_id", how="left")
@@ -275,7 +290,13 @@ def run_policy(n, layout_contents, sku_contents, sales_contents, policy, show_di
             except Exception:
                 group_size = 18
             groups = af_group_skus_by_affinity(affinity, sku_ids, group_size=group_size)
-            policy_obj = AffinitySlotting(groups)
+            # popularity weights (restrict to considered sku_ids) for nearer placement of hot clusters
+            sku_pop_map = {}
+            if sales_df is not None and "quantity" in sales_df.columns:
+                pop_series = sales_df.groupby("sku_id")["quantity"].sum()
+                # restrict to current sku_ids to avoid KeyErrors
+                sku_pop_map = {int(s): float(pop_series.get(int(s), 0.0)) for s in sku_ids}
+            policy_obj = AffinitySlotting(groups, sku_popularity=sku_pop_map)
             assign = policy_obj.assign(sku_ids, locations_objs)
             # Use the same groups for correlated simulation so heat reflects placement
             clusters_for_sim = [list(g) for g in groups]
@@ -307,7 +328,15 @@ def run_policy(n, layout_contents, sku_contents, sales_contents, policy, show_di
         # match simulation volume to uploaded sales
         num_orders_obs = int(sales_df["order_id"].nunique())
         mean_lines_obs = float(sales_df.groupby("order_id")["sku_id"].size().mean()) if num_orders_obs > 0 else 4.0
-        syn_orders = sample_correlated_orders(clusters_for_sim, num_orders=num_orders_obs, mean_lines=mean_lines_obs)
+        # weight clusters and items by observed SKU popularity so simulated heat reflects actual demand
+        sku_pop = sales_df.groupby("sku_id")["quantity"].sum().to_dict() if (sales_df is not None and "quantity" in sales_df.columns) else {}
+        syn_orders = sample_correlated_orders(
+            clusters_for_sim,
+            sku_popularity=sku_pop,
+            num_orders=num_orders_obs,
+            mean_lines=mean_lines_obs,
+            cross_cluster_prob=0.15,
+        )
         tote_heat_override = tote_pick_counts(syn_orders, sku_to_tote)
         # scale simulated picks to match total sales quantity so global colors are comparable
         try:
@@ -405,10 +434,110 @@ def run_policy(n, layout_contents, sku_contents, sales_contents, policy, show_di
         # if diagnostics fail, don't block the main output
         diag_children = None
 
-    return heat_current, heat_proposed, diag_children
+    # also return raw maps for export callbacks
+    cur_store = current_map.to_dict("records")
+    prop_store = proposed_map.to_dict("records")
+    return heat_current, heat_proposed, diag_children, cur_store, prop_store
 
 
 # Removed front-view and selectors per request to simplify
+
+
+# --------- Exports for 3PL WMS integration ---------
+
+def _letters_index(letters: str) -> int:
+    try:
+        letters = str(letters)
+        if '-' in letters:
+            letters = letters.split('-')[-1]
+        letters = ''.join([c for c in letters.upper() if c.isalpha()])
+        if len(letters) == 0:
+            return 0
+        if len(letters) == 1:
+            return ord(letters[0]) - ord('A')
+        return (ord(letters[0]) - ord('A')) * 26 + (ord(letters[1]) - ord('A'))
+    except Exception:
+        return 0
+
+
+@app.callback(
+    Output('download-plan', 'data'),
+    Input('btn-export-plan', 'n_clicks'),
+    State('store-current-map', 'data'),
+    State('store-proposed-map', 'data'),
+    State('upload-sales', 'contents'),
+    State('upload-layout', 'contents'),
+    State('export-top-n', 'value'),
+    prevent_initial_call=True
+)
+def export_move_plan(n_clicks, cur_data, prop_data, sales_contents, layout_contents, top_n):
+    import datetime
+    if not n_clicks:
+        return dash.no_update
+    if cur_data is None or prop_data is None:
+        return dash.no_update
+    cur = pd.DataFrame(cur_data)
+    prop = pd.DataFrame(prop_data)
+    # ensure side/section in both maps; hydrate from layout if missing
+    layout_df = parse_upload(layout_contents) if layout_contents is not None else _read_run_data_csv("layout.csv")
+    if layout_df is not None:
+        for df in (cur, prop):
+            if 'side_id' not in df.columns or 'section' not in df.columns:
+                df.drop(columns=[c for c in df.columns if c not in ('sku_id','tote_id')], inplace=True)
+                df.merge(layout_df[["tote_id","side_id","section"]], on="tote_id", how="left")
+    # popularity from sales if available
+    sales_df = parse_upload(sales_contents) if sales_contents is not None else _read_run_data_csv("sales.csv")
+    if sales_df is not None and 'sku_id' in sales_df.columns and 'quantity' in sales_df.columns:
+        pop = sales_df.groupby('sku_id')['quantity'].sum()
+    else:
+        pop = pd.Series(1, index=pd.Index(cur['sku_id'].unique(), name='sku_id'))
+
+    merged = cur[['sku_id','tote_id','side_id','section']].rename(columns={'tote_id':'from_tote','side_id':'from_side','section':'from_section'}).merge(
+        prop[['sku_id','tote_id','side_id','section']].rename(columns={'tote_id':'to_tote','side_id':'to_side','section':'to_section'}), on='sku_id', how='inner'
+    )
+    # compute impact: popularity * (delta_sections toward bottom)
+    merged['from_idx'] = merged['from_section'].apply(_letters_index)
+    merged['to_idx'] = merged['to_section'].apply(_letters_index)
+    merged['delta_sections'] = (merged['from_idx'] - merged['to_idx']).clip(lower=0)
+    merged['popularity'] = merged['sku_id'].map(pop).fillna(0).astype(float)
+    merged['impact_score'] = merged['popularity'] * merged['delta_sections']
+    # keep only actual moves
+    plan = merged[merged['from_tote'] != merged['to_tote']].copy()
+    if plan.empty:
+        return dash.no_update
+    plan.sort_values(['impact_score','popularity','delta_sections'], ascending=[False, False, False], inplace=True)
+    try:
+        k = int(top_n) if top_n is not None else 1000
+    except Exception:
+        k = 1000
+    out = plan.head(k)[['sku_id','from_tote','from_side','from_section','to_tote','to_side','to_section','popularity','delta_sections','impact_score']]
+    ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    filename = f"neo_move_plan_top{k}_{ts}.csv"
+    csv_str = out.to_csv(index=False)
+    return dcc.send_string(csv_str, filename)
+
+
+@app.callback(
+    Output('download-mapping', 'data'),
+    Input('btn-export-mapping', 'n_clicks'),
+    State('store-proposed-map', 'data'),
+    State('upload-layout', 'contents'),
+    prevent_initial_call=True
+)
+def export_proposed_mapping(n_clicks, prop_data, layout_contents):
+    import datetime
+    if not n_clicks:
+        return dash.no_update
+    if prop_data is None:
+        return dash.no_update
+    df = pd.DataFrame(prop_data)
+    layout_df = parse_upload(layout_contents) if layout_contents is not None else _read_run_data_csv("layout.csv")
+    if layout_df is not None and ('side_id' not in df.columns or 'section' not in df.columns):
+        df = df.merge(layout_df[["tote_id","side_id","section"]], on="tote_id", how="left")
+    out = df[['sku_id','tote_id','side_id','section']].sort_values(['side_id','section','tote_id','sku_id'])
+    ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    filename = f"neo_proposed_mapping_{ts}.csv"
+    return dcc.send_string(out.to_csv(index=False), filename)
 
 
 if __name__ == "__main__":
